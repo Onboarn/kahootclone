@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Квиз-клон</title>
+<style>
+:root{--bg:#f3effa;--fg:#1d1233;--card:#fff;--mut:#6b5f85;--pri:#46178f;--bd:#d9d0ec}
+@media (prefers-color-scheme:dark){:root{--bg:#1a0f33;--fg:#f1ecfb;--card:#2a1c4d;--mut:#a99ac9;--pri:#8b5cf6;--bd:#43306f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh}
+#app{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:1.5rem;margin:.4em 0}h2{font-size:1.15rem;margin:.6em 0}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin:10px 0}
+button,input,select{font:inherit;color:inherit}
+input[type=text],input[type=password],input:not([type]),select{width:100%;padding:11px;border:2px solid var(--bd);border-radius:10px;background:var(--card);margin:4px 0}
+button{border:0;border-radius:10px;padding:11px 16px;background:var(--pri);color:#fff;font-weight:700;cursor:pointer}
+button:disabled{opacity:.4}button.g{background:transparent;color:var(--pri);border:2px solid var(--pri)}button.d{background:#c62828}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:1}.row>button{flex:0 0 auto}
+.pin{font-size:3rem;font-weight:900;letter-spacing:.15em;text-align:center;color:var(--pri)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.ans{min-height:84px;border-radius:12px;color:#fff;font-weight:700;display:flex;gap:8px;align-items:center;padding:12px;font-size:1.05rem;position:relative}
+.ans.dim{opacity:.35}.ans.ok::after{content:"✓";position:absolute;right:12px;font-size:1.6rem}
+.bar{height:10px;background:var(--bd);border-radius:6px;overflow:hidden;margin:10px 0}.bar i{display:block;height:100%;width:100%;background:var(--pri)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{background:var(--card);border:1px solid var(--bd);border-radius:20px;padding:4px 12px}
+.lb{display:flex;justify-content:space-between;padding:9px 12px;border-radius:10px;background:var(--card);border:1px solid var(--bd);margin:6px 0}
+.big{text-align:center;padding:30px 10px}.big b{font-size:2.2rem;display:block}
+.mut{color:var(--mut);font-size:.9rem}label.o{display:flex;gap:8px;align-items:center;padding:8px 0}label.o input{width:20px;height:20px;margin:0}
+.pod{display:flex;gap:8px;align-items:flex-end;justify-content:center;margin:20px 0}.pod div{flex:1;background:var(--pri);color:#fff;border-radius:10px 10px 0 0;text-align:center;padding:8px 4px;font-weight:700;overflow-wrap:anywhere}
+</style></head><body><div id="app"><p class="mut">Подключение…</p></div>
+<script>
+const $=s=>document.querySelector(s),E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const COL=['#e21b3c','#1368ce','#d89e00','#26890c'],SYM=['▲','◆','●','■'];
+const MODES={classic:'Классика — чем быстрее, тем больше очков',equal:'Равные очки — скорость не важна',surv:'❤️ Выживание — 3 жизни, ошибся → потерял жизнь'};
+/* ---------- сеть: мини-«база» поверх SSE ---------- */
+const ss={get:k=>{try{return sessionStorage.getItem(k)||''}catch(e){return ''}},set:(k,v)=>{try{v?sessionStorage.setItem(k,v):sessionStorage.removeItem(k)}catch(e){}}};
+let TOK=ss.get('tok'),uid;try{uid=localStorage.uid}catch(e){}
+if(!uid){uid=Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,'0')).join('');try{localStorage.uid=uid}catch(e){}}
+const cache={},subs=[];let es,fl,online=false;
+const snap=p=>({id:p.split('/').pop(),exists:p in cache,data:()=>cache[p]});
+const flush=()=>{clearTimeout(fl);fl=setTimeout(()=>subs.forEach(s=>s.f(s.p?snap(s.p):{docs:Object.keys(cache).filter(k=>k.startsWith(s.c+'/')).map(snap)})),30)};
+function connect(){if(es)es.close();es=new EventSource('/events?t='+TOK);
+ es.onopen=()=>{for(const k in cache)delete cache[k];online=true};
+ es.onerror=()=>{online=false};
+ es.onmessage=m=>{const e=JSON.parse(m.data);if(e.p){e.d===null?delete cache[e.p]:cache[e.p]=e.d}flush()}}
+async function op(o,p,d){const r=await fetch('/op',{method:'POST',headers:{'x-token':TOK},body:JSON.stringify({op:o,p,d})});if(!r.ok)throw new Error(r.status===403?'Нет доступа (войдите как админ заново)':'Ошибка сервера')}
+const db={doc:p=>({get:async()=>snap(p),set:d=>op('set',p,d),update:d=>op('update',p,d),delete:()=>op('delete',p),onSnapshot(f){subs.push({p,f});f(snap(p))}}),
+ collection:c=>({get:async()=>({docs:Object.keys(cache).filter(k=>k.startsWith(c+'/')).map(snap)}),onSnapshot(f){subs.push({c,f});flush()}})};
+/* ---------- состояние ---------- */
+let isHost=!!TOK,asP=false,lg=false,G=null,players=[],quizzes=[],hv='home',ed=null,cfg=null,L={qi:-2,t0:0,done:false,ch:-1},rv=false;
+const app=$('#app'),set=h=>app.innerHTML=h;
+const toast=m=>{let t=$('#toast');if(!t){t=document.createElement('div');t.id='toast';t.style.cssText='position:fixed;left:12px;right:12px;bottom:16px;background:#c62828;color:#fff;padding:12px;border-radius:10px;text-align:center;z-index:9';document.body.appendChild(t)}t.textContent=m;t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',3500)};
+const shuf=a=>{for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a};
+const demo=()=>({id:'q'+Date.now(),title:'Пример квиза',qs:[
+ {q:'Столица Франции?',a:['Лион','Париж','Ницца','Марсель'],c:1,t:15,x2:0},
+ {q:'Солнце — это звезда.',a:['Верно','Неверно','',''],c:0,t:10,x2:0},
+ {q:'Сколько будет 7 × 8?',a:['54','56','48','64'],c:1,t:15,x2:0},
+ {q:'Самая большая планета Солнечной системы?',a:['Сатурн','Земля','Юпитер','Марс'],c:2,t:20,x2:1}]});
+const blankQ=()=>({q:'',a:['','','',''],c:0,t:20,x2:0});
+const board=(sc,n=99)=>Object.entries(sc||{}).map(([id,v])=>({id,...v})).sort((a,b)=>b.s-a.s).slice(0,n);
+const hearts=v=>G.mode==='surv'?' '+'❤️'.repeat(Math.max(0,v.l??3))||' 💀':'';
+const lb=(sc,n)=>board(sc,n).map((p,i)=>`<div class="lb"><span>${i+1}. ${E(p.n)}${G.mode==='surv'?(p.l>0?' '+'❤️'.repeat(p.l):' 💀'):''}</span><b>${p.s}</b></div>`).join('')||'<p class="mut">Пока нет очков</p>';
+const RUN=()=>quizzes.find(x=>x.id==='run');
+const answers=h=>`<div class="grid">${G.qs[G.qi].a.map((t,i)=>h(t,i)).join('')}</div>`;
+const myScore=()=>(G.scores||{})[uid]||{s:0,st:0,l:3};
+const alive=id=>G.mode!=='surv'||((G.scores||{})[id]?.l??3)>0;
+
+function init(){
+ db.doc('games/current').onSnapshot(s=>{G=s.exists?s.data():null;render()});
+ db.collection('players').onSnapshot(s=>{players=s.docs.map(d=>({id:d.id,...d.data()}));render()});
+ db.collection('quizzes').onSnapshot(s=>{quizzes=s.docs.map(d=>d.data());render()});
+ connect();setInterval(onTick,250);
+}
+function render(){if(lg)return;if(isHost&&!asP){if(!G&&(hv==='edit'))return;hostView()}else playerView()}
+/* ---------- ВЕДУЩИЙ ---------- */
+function hostView(){
+ if(!G&&hv==='cfg'){set(`<h1>Настройки игры</h1><div class="card"><b>Режим</b>${Object.entries(MODES).map(([k,v])=>`<label class="o"><input type="radio" name="mode" data-cfg="mode" value="${k}" ${cfg.mode===k?'checked':''}>${v}</label>`).join('')}</div><div class="card"><label class="o"><input type="checkbox" data-cfg="sq" ${cfg.sq?'checked':''}>Перемешать вопросы</label><label class="o"><input type="checkbox" data-cfg="sa" ${cfg.sa?'checked':''}>Перемешать варианты ответов</label></div><div class="row"><button data-act="go">▶ Создать игру</button><button class="g" data-act="cancel">Назад</button></div>`);return}
+ if(!G){set(`<h1>🎮 Мои квизы</h1><div class="row"><button data-act="new">+ Новый квиз</button><button class="g" data-act="demo">Пример</button><button class="g" data-act="asplayer">Играть как игрок</button><button class="g" data-act="logout">Выйти</button></div>`+
+  (quizzes.filter(q=>q.id!=='run').map(q=>`<div class="card"><b>${E(q.title)}</b> <span class="mut">· ${q.qs.length} вопр.</span><div class="row" style="margin-top:8px"><button data-act="launch" data-id="${q.id}">▶ Запустить</button><button class="g" data-act="edit" data-id="${q.id}">Изменить</button><button class="d" data-act="del" data-id="${q.id}">Удалить</button></div></div>`).join('')||'<p class="mut">Квизов пока нет. Создайте первый!</p>'));return}
+ const ph=G.phase,q=G.qs[G.qi];
+ if(ph==='lobby')set(`<div class="card big"><div class="mut">Код игры</div><div class="pin">${G.pin}</div><h2>${E(G.title)}</h2><div class="mut">${MODES[G.mode]}</div></div><div class="card"><b>Игроки: ${players.length}</b><div class="chips" style="margin-top:8px">${players.map(p=>`<span class="chip">${E(p.name)}</span>`).join('')||'<span class="mut">Ждём игроков…</span>'}</div></div><div class="row"><button data-act="start" ${players.length?'':'disabled'}>Начать игру</button><button class="g" data-act="close">Отмена</button></div>`);
+ else if(ph==='question')set(`<div class="row mut"><span>Вопрос ${G.qi+1}/${G.n}${q.x2?' · ⚡ ×2 очки':''}</span><span id="cnt" style="text-align:right"></span></div><h1>${E(q.q)}</h1><div class="bar"><i id="bar"></i></div><div id="tm" class="mut"></div>${answers((t,i)=>`<div class="ans" style="background:${COL[i]}">${SYM[i]} ${E(t)}</div>`)}<div class="row" style="margin-top:12px"><button class="g" data-act="reveal">Пропустить время</button></div>`);
+ else if(ph==='reveal')set(`<h1>${E(q.q)}</h1>${answers((t,i)=>`<div class="ans ${i===G.correct?'ok':'dim'}" style="background:${COL[i]}">${SYM[i]} ${E(t)} <span style="margin-left:auto;margin-right:${i===G.correct?30:0}px">${G.dist[i]}</span></div>`)}<h2>Топ‑5</h2>${lb(G.scores,5)}<button data-act="next">${G.qi+1>=G.n?'Итоги':'Дальше →'}</button>`);
+ else set(`<h1>🏆 Итоги</h1>${podium(G.scores)}${lb(G.scores,10)}<button data-act="close">Закрыть игру</button>`);
+}
+function podium(sc){const b=board(sc,3),o=[1,0,2].filter(i=>b[i]);return `<div class="pod">${o.map(i=>`<div style="height:${i===0?150:i===1?115:90}px">${['🥇','🥈','🥉'][i]}<br>${E(b[i].n)}<br>${b[i].s}</div>`).join('')}</div>`}
+/* ---------- ИГРОК ---------- */
+function playerView(){
+ const me=players.find(p=>p.id===uid);
+ if(!G||!me){set(`<h1>Присоединиться</h1><div class="card"><input id="pin" inputmode="numeric" placeholder="Код игры"><input id="nm" maxlength="16" placeholder="Ваш ник"><button data-act="join" style="width:100%;margin-top:6px">Играть</button><p id="err" class="mut"></p>${isHost?'<button class="g" data-act="back" style="width:100%">← К квизам</button>':'<button class="g" data-act="adm" style="width:100%;margin-top:6px">🔑 Вход для админа</button>'}</div>`);return}
+ const ph=G.phase,q=G.qs[G.qi],sc=myScore();
+ if(ph==='lobby')set(`<div class="card big"><b>Вы в игре!</b>${E(me.name)}<p class="mut">${MODES[G.mode]}</p><p class="mut">Ждём начала…</p></div>`);
+ else if(ph==='question'){
+  if(L.qi!==G.qi)L={qi:G.qi,t0:performance.now(),done:false,ch:-1};
+  if(!alive(uid))set(`<div class="card big"><b>💀 Вы выбыли</b><p class="mut">Смотрите на экран ведущего</p></div>`);
+  else if(L.done)set(`<div class="card big"><b>Ответ принят</b><p class="mut">Ждём остальных…</p></div>`);
+  else set(`<div class="row mut"><span>${G.qi+1}/${G.n}${q.x2?' · ⚡ ×2':''}</span><span style="text-align:right">${sc.s} очк.${hearts(sc)}</span></div><div class="bar"><i id="bar"></i></div><div class="grid">${q.a.map((_,i)=>`<button class="ans" data-act="ans" data-i="${i}" style="background:${COL[i]};justify-content:center;font-size:2.4rem;min-height:120px">${SYM[i]}</button>`).join('')}</div>`);
+ }else if(ph==='reveal'){const ok=sc.ok&&L.qi===G.qi,rank=board(G.scores).findIndex(p=>p.id===uid)+1;
+  set(`<div class="card big" style="border-color:${ok?'#26890c':'#e21b3c'}"><b>${ok?'✓ Верно!':L.ch<0?'⏱ Нет ответа':'✗ Неверно'}</b>${ok?`<div>+${sc.pts}</div>`:''}${sc.st>1?`<p>🔥 Серия: ${sc.st}</p>`:''}<h2>${sc.s} очков · место ${rank}${hearts(sc)}</h2></div>`)}
+ else{const rank=board(G.scores).findIndex(p=>p.id===uid)+1;set(`<h1>🏆 Игра окончена</h1><div class="card big"><b>Место ${rank}</b>${sc.s} очков</div>${podium(G.scores)}`)}
+}
+/* ---------- РЕДАКТОР ---------- */
+function editView(){
+ set(`<h1>Редактор</h1><input data-f="title" value="${E(ed.title)}" placeholder="Название квиза">`+ed.qs.map((x,qi)=>`<div class="card"><div class="row"><b>Вопрос ${qi+1}</b><button class="g" data-act="tf" data-q="${qi}">Верно/Неверно</button><button class="d" data-act="rmq" data-q="${qi}">✕</button></div><input data-q="${qi}" data-f="q" value="${E(x.q)}" placeholder="Текст вопроса">${x.a.map((a,i)=>`<div class="row" style="flex-wrap:nowrap"><input type="radio" name="c${qi}" data-q="${qi}" data-c="${i}" ${x.c===i?'checked':''} style="width:24px;flex:0 0 24px"><input data-q="${qi}" data-a="${i}" value="${E(a)}" placeholder="${SYM[i]} Вариант ${i+1}${i>1?' (необязательно)':''}" style="border-color:${COL[i]}"></div>`).join('')}<div class="row"><label class="mut">Время, сек <select data-q="${qi}" data-f="t">${[10,15,20,30,45,60].map(t=>`<option ${x.t===t?'selected':''}>${t}</option>`).join('')}</select></label><label class="o"><input type="checkbox" data-q="${qi}" data-f="x2" ${x.x2?'checked':''}>⚡ ×2 очки</label></div></div>`).join('')+
+ `<div class="row"><button class="g" data-act="addq">+ Вопрос</button><button data-act="save">Сохранить</button><button class="g" data-act="cancel">Назад</button></div>`);
+}
+/* ---------- ТАЙМЕР ---------- */
+function onTick(){
+ if(!G||G.phase!=='question')return;
+ const t=G.qs[G.qi].t*1000,bar=$('#bar');
+ if(isHost&&!asP){const left=t-(Date.now()-G.qStart),act=players.filter(p=>alive(p.id)),n=act.filter(p=>p.qi===G.qi).length;
+  if(bar)bar.style.width=Math.max(0,left/t*100)+'%';
+  if($('#tm'))$('#tm').textContent=Math.max(0,Math.ceil(left/1000))+' с';
+  if($('#cnt'))$('#cnt').textContent=`Ответили: ${n}/${act.length}`;
+  if(left<=0||(act.length&&n>=act.length))reveal();
+ }else if(bar&&!L.done){bar.style.width=Math.max(0,(t-(performance.now()-L.t0))/t*100)+'%'}
+}
+/* ---------- ЛОГИКА ИГРЫ ---------- */
+async function reveal(){
+ if(rv||!G||G.phase!=='question')return;rv=true;
+ try{const run=RUN();if(!run)return;const qq=run.qs[G.qi],T=qq.t*1000;
+  const ps=(await db.collection('players').get()).docs.map(d=>({id:d.id,...d.data()}));
+  const sc={...(G.scores||{})},dist=Array(qq.a.length).fill(0);
+  for(const p of ps){const o={n:p.name,s:0,st:0,l:3,...(sc[p.id]||{})};o.n=p.name;
+   const was=o.l>0||G.mode!=='surv',has=was&&p.qi===G.qi&&p.ch>=0;if(has&&dist[p.ch]!==undefined)dist[p.ch]++;
+   const ok=has&&p.ch===qq.c&&p.ms<=T+1500;
+   if(ok){o.st++;const base=G.mode==='equal'?1000:Math.round(1000*(1-Math.min(1,p.ms/T)/2));o.pts=(base+Math.min(o.st-1,4)*100)*(qq.x2?2:1)}
+   else{o.st=0;o.pts=0;if(G.mode==='surv'&&was)o.l--}
+   o.ok=ok;o.s+=o.pts;sc[p.id]=o}
+  await db.doc('games/current').update({phase:'reveal',correct:qq.c,dist,scores:sc});
+ }catch(e){toast(e.message)}finally{rv=false}
+}
+document.addEventListener('click',async e=>{
+ const b=e.target.closest('[data-act]');if(!b)return;const a=b.dataset.act,id=b.dataset.id;
+ try{
+ if(a==='new'){ed={id:'q'+Date.now(),title:'',qs:[blankQ()]};hv='edit';editView()}
+ else if(a==='adm'){lg=true;set(`<h1>Админка</h1><div class="card"><input id="pw" type="password" placeholder="Пароль"><button data-act="login" style="width:100%;margin-top:6px">Войти</button><button class="g" data-act="cancelpw" style="width:100%;margin-top:6px">Назад</button><p id="err" class="mut"></p></div>`)}
+ else if(a==='cancelpw'){lg=false;render()}
+ else if(a==='login'){const r=await fetch('/login',{method:'POST',body:JSON.stringify({pw:$('#pw').value})});
+  if(r.ok){TOK=(await r.json()).t;ss.set('tok',TOK);isHost=true;asP=false;lg=false;connect();render()}else $('#err').textContent='Неверный пароль'}
+ else if(a==='logout'){TOK='';ss.set('tok','');isHost=false;asP=false;connect();render()}
+ else if(a==='asplayer'){asP=true;render()}
+ else if(a==='back'){asP=false;render()}
+ else if(a==='demo'){const d=demo();await db.doc('quizzes/'+d.id).set(d)}
+ else if(a==='edit'){ed=JSON.parse(JSON.stringify(quizzes.find(x=>x.id===id)));hv='edit';editView()}
+ else if(a==='del'){if(b.dataset.sure)await db.doc('quizzes/'+id).delete();else{b.dataset.sure=1;b.textContent='Точно удалить?'}}
+ else if(a==='addq'){ed.qs.push(blankQ());editView()}
+ else if(a==='tf'){Object.assign(ed.qs[+b.dataset.q],{a:['Верно','Неверно','',''],c:0});editView()}
+ else if(a==='rmq'){if(ed.qs.length>1){ed.qs.splice(+b.dataset.q,1);editView()}}
+ else if(a==='cancel'){hv='home';ed=null;cfg=null;render()}
+ else if(a==='save'){let bad=!ed.title.trim();
+  for(const x of ed.qs){let k=x.a.length;while(k>0&&!x.a[k-1].trim())k--;
+   if(!x.q.trim()||k<2||x.a.slice(0,k).some(y=>!y.trim())||x.c>=k)bad=true;else x.a=x.a.slice(0,k)}
+  if(bad){toast('Нужны название, текст вопросов, минимум 2 непустых варианта подряд и правильный ответ среди них');return}
+  await db.doc('quizzes/'+ed.id).set(ed);hv='home';ed=null;render()}
+ else if(a==='launch'){cfg={id,mode:'classic',sq:0,sa:0};hv='cfg';render()}
+ else if(a==='go'){const q=quizzes.find(x=>x.id===cfg.id);let qs=JSON.parse(JSON.stringify(q.qs));
+  if(cfg.sq)shuf(qs);
+  if(cfg.sa)qs=qs.map(x=>{const ix=shuf(x.a.map((_,i)=>i));return{...x,a:ix.map(i=>x.a[i]),c:ix.indexOf(x.c)}});
+  for(const d of (await db.collection('players').get()).docs)await db.doc('players/'+d.id).delete();
+  await db.doc('quizzes/run').set({id:'run',qs});
+  await db.doc('games/current').set({pin:String(Math.floor(100000+Math.random()*900000)),title:q.title,mode:cfg.mode,phase:'lobby',qi:0,n:qs.length,qs:qs.map(({q,a,t,x2})=>({q,a,t,x2:x2||0})),scores:{},qStart:0,correct:-1,dist:[]});
+  hv='home';cfg=null}
+ else if(a==='start'){await db.doc('games/current').update({phase:'question',qi:0,qStart:Date.now()})}
+ else if(a==='reveal')reveal();
+ else if(a==='next'){const dead=G.mode==='surv'&&!Object.values(G.scores).some(v=>v.l>0);
+  G.qi+1>=G.n||dead?await db.doc('games/current').update({phase:'end'}):await db.doc('games/current').update({phase:'question',qi:G.qi+1,qStart:Date.now(),correct:-1})}
+ else if(a==='close'){for(const d of (await db.collection('players').get()).docs)await db.doc('players/'+d.id).delete();await db.doc('games/current').delete();await db.doc('quizzes/run').delete();hv='home'}
+ else if(a==='join'){const pin=$('#pin').value.trim(),nm=$('#nm').value.trim().slice(0,16);
+  if(!G||G.pin!==pin||G.phase!=='lobby'||!nm){$('#err').textContent='Неверный код, пустой ник или игра уже идёт';return}
+  await db.doc('players/'+uid).set({name:nm,qi:-1,ch:-1,ms:0})}
+ else if(a==='ans'&&!L.done){const ms=Math.round(performance.now()-L.t0),ch=+b.dataset.i;L.done=true;L.ch=ch;playerView();
+  await db.doc('players/'+uid).set({name:(players.find(p=>p.id===uid)||{}).name||'?',qi:G.qi,ch,ms})}
+ }catch(err){console.error(err);toast(err.message||'Ошибка')}
+});
+document.addEventListener('input',e=>{
+ const t=e.target;if(t.dataset.cfg){cfg[t.dataset.cfg]=t.type==='checkbox'?+t.checked:t.value;return}
+ if(!ed||(t.dataset.q===undefined&&t.dataset.f!=='title'))return;
+ if(t.dataset.f==='title')ed.title=t.value;
+ else{const x=ed.qs[+t.dataset.q];
+  if(t.dataset.f==='q')x.q=t.value;else if(t.dataset.f==='t')x.t=+t.value;else if(t.dataset.f==='x2')x.x2=+t.checked;
+  else if(t.dataset.a!==undefined)x.a[+t.dataset.a]=t.value;else if(t.dataset.c!==undefined)x.c=+t.dataset.c}
+});
+init();
+</script></body></html>

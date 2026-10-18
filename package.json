@@ -1,0 +1,7 @@
+{
+  "name": "kahoot-clone",
+  "version": "1.0.0",
+  "description": "Kahoot-клон без зависимостей: один админ создаёт квизы, игроки заходят по коду без регистрации",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=16" }
+}
