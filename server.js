@@ -19,7 +19,7 @@ async function load() {
   try {
     if (RURL) { const r = await redis(['GET', 'kahoot']); if (r.result) store = JSON.parse(r.result); }
     else store = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-  } catch (e) { console.error('Не удалось загрузить данные:', e.message); }
+  } catch (e) { if (e.code !== 'ENOENT') console.error('Не удалось загрузить данные:', e.message); }
   console.log('Хранилище: ' + (RURL ? 'Upstash Redis' : 'файл data.json') + ', документов: ' + Object.keys(store).length);
 }
 const secret = p => p.startsWith('quizzes/');           // квизы с правильными ответами видит только админ
@@ -41,7 +41,7 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       let j; try { j = JSON.parse(b); } catch (e) { res.statusCode = 400; return res.end(); }
       if (u === '/login') {
-        if (j.pw === PW) return res.end(JSON.stringify({ t: TOKEN }));
+        if (String(j.pw || '').trim() === PW.trim()) return res.end(JSON.stringify({ t: TOKEN }));
         res.statusCode = 401; return res.end();
       }
       if (u === '/op') {
@@ -65,12 +65,15 @@ const server = http.createServer((req, res) => {
   }
   if (u === '/' || u === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    return fs.createReadStream(path.join(__dirname, 'public', 'index.html')).pipe(res);
+    const f = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find(fs.existsSync);
+    if (!f) { res.statusCode = 500; return res.end('index.html не найден: положите его в папку public рядом с server.js'); }
+    return fs.createReadStream(f).pipe(res);
   }
   res.statusCode = 404; res.end('Not found');
 });
 const start = () => server.listen(PORT, () => {
   console.log('Kahoot-клон запущен:  http://localhost:' + PORT);
+  console.log('Пароль админа: ' + (process.env.ADMIN_PASSWORD ? 'задан переменной ADMIN_PASSWORD' : 'по умолчанию (onbadmin123)'));
   for (const l of Object.values(os.networkInterfaces()).flat())
     if (l.family === 'IPv4' && !l.internal) console.log('Для телефонов в той же Wi‑Fi:  http://' + l.address + ':' + PORT);
 });
